@@ -159,7 +159,7 @@
 </main>
 
 <footer>
-  <p>Privacy: this page stores your name, school email, the time you chose, and your reason for coming. Only you and lab faculty with a need to know can see it. Records are deleted automatically after the retention period set by the program.</p>
+  <p>Privacy: this page stores your name, school email, the time you chose, and your reason for coming. Only you and lab faculty with a need to know can see it. Records are deleted automatically at the end of the semester.</p>
 </footer>
 
 <!-- Sign-up dialog -->
@@ -242,7 +242,11 @@ const CONFIG = {
   allowedEmail: /@mail\.cfcc\.edu$/i,   // must match the domain in firestore.rules
   defaultLocation: "Nursing Skills Lab",
   courses: ["NUR 111","NUR 112","NUR 113","NUR 114","NUR 211","NUR 212","NUR 213","NUR 221","NUR 223"],
-  retentionDays: 365,   // records are deleted this long after the slot ends (needs TTL policy, see SETUP.md)
+  // Records for a slot are deleted the day after the last day of the semester it falls in
+  // (plus the optional extra days below). Needs the Firestore TTL policy, see SETUP.md.
+  // EDIT: use your real last-day-of-semester dates (YYYY-MM-DD). Add new ones each term.
+  semesterEnds: ["2026-12-18", "2027-05-14", "2027-08-06"],
+  deleteDaysAfterSemester: 0,
   horizonDays: 60,      // how far ahead students can see
   cancelCutoffHours: 24, // students can't cancel within this many hours of the start (faculty can always remove)
   signupCutoffHours: 24  // students can't sign up within this many hours of the start
@@ -360,6 +364,11 @@ async function bookSlot(s, purpose, course, target = null) {
       ...(byFaculty ? { addedBy: S.user.email } : {})
     });
   });
+}
+// Deletion date for a slot: the day after the end of the semester containing it.
+function expiryFor(slotEnd) {
+  const ends = CONFIG.semesterEnds.map(d => { const [y, m, dd] = d.split("-").map(Number); return new Date(y, m - 1, dd + 1 + CONFIG.deleteDaysAfterSemester); }).sort((a, b) => a - b);
+  return ends.find(e => e.getTime() > slotEnd.getTime()) || null;
 }
 const signupOpen = startMs => startMs - Date.now() >= CONFIG.signupCutoffHours * 3600000;
 const signupClosedNote = () => `Sign-up closes ${CONFIG.signupCutoffHours} hours before the start. Please contact lab faculty.`;
@@ -673,6 +682,7 @@ $("#slot-form").addEventListener("submit", async e => {
     while (t.getTime() + len * 60000 <= stop.getTime()) { const n = new Date(t.getTime() + len * 60000); list.push([t, n]); t = n; }
   }
   if (!list.length) { fail("The time window is shorter than one slot. Check the start, end and slot length."); return; }
+  if (list.some(([, b]) => !expiryFor(b))) { fail("Some of those dates are after the last semester end date in the settings. Add the semester's end date to semesterEnds in index.html first."); return; }
   if (list.length > 400) { fail("That would create more than 400 slots at once. Please use fewer weeks."); return; }
   try {
     for (let i = 0; i < list.length; i += 400) {
@@ -680,7 +690,7 @@ $("#slot-form").addEventListener("submit", async e => {
       for (const [a, b] of list.slice(i, i + 400)) {
         batch.set(doc(collection(db, "slots")), {
           start: Timestamp.fromDate(a), end: Timestamp.fromDate(b), location: loc, capacity: cap, bookedCount: 0,
-          createdBy: S.user.email, expireAt: Timestamp.fromDate(new Date(b.getTime() + CONFIG.retentionDays * 86400000))
+          createdBy: S.user.email, expireAt: Timestamp.fromDate(expiryFor(b))
         });
       }
       await batch.commit();
